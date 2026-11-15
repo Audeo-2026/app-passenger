@@ -2,7 +2,32 @@
 
 현대자동차그룹 차량용 앱 개발 공모전 출품작 **Audeo**의 탑승자 앱입니다. 운전자 차(Pleos Connect)와 통화하면 AI 비서 오디가 대화를 듣고 픽업 약속(만날 시각·장소)을 정리해요. 탑승자 화면은 그 결과를 보여 주고, 차가 가까워지면 차가 있는 방향을 알려 줍니다.
 
-Kotlin Multiplatform + Compose Multiplatform으로 Android와 iOS를 한 코드로 만듭니다. 차량 앱 레포(`Audeo-2026/audeo-app`)의 탑승자 테스트 페이지(`tools/web_passenger/index.html`)를 앱으로 옮긴 것이에요.
+Kotlin Multiplatform + Compose Multiplatform으로 Android와 iOS를 한 코드로 만듭니다. 차량 앱 레포(`Audeo-2026/app`)의 탑승자 테스트 페이지(`tools/web_passenger/index.html`)를 앱으로 옮긴 것이에요.
+
+> **한 줄 소개:** 어디오(Audeo) 탑승자 앱 — 운전자 차와 통화하면 AI가 만날 약속을 정리하고, 차가 가까워지면 차 있는 방향을 알려 주는 동승자용 휴대폰 앱
+
+## 제출 정보
+
+| 항목 | 내용 |
+| --- | --- |
+| 앱 이름 | 어디오(Audeo) 탑승자 앱 · 패키지 `com.audeo.phone` |
+| APK | `apk/Audeo_AudeoPassenger_release.apk` (release 빌드, 서버 주소 내장) |
+| 함께 보는 레포 | 차량 앱 [`Audeo-2026/app`](https://github.com/Audeo-2026/app) (Pleos Connect, 주 제출물) · 서버 [`Audeo-2026/audeo-server`](https://github.com/Audeo-2026/audeo-server) |
+| 서버 | `https://audeo.mosslab.dev/api/v1/` (심사 기간 동안 켜 둠) |
+| 테스트 환경 | Android 14(API 34) 휴대폰 에뮬레이터 또는 실기기, 마이크·위치 권한 허용 |
+| 에뮬레이터 | 이 앱은 휴대폰용이라 Pleos Connect 에뮬레이터가 아니라 일반 Android 휴대폰 에뮬레이터(예: Pixel 7, 1080×2400, API 34)에서 실행해요. 차량 쪽은 차량 앱 README의 Pleos Connect 에뮬레이터 v2.1.0을 써요 |
+
+### APK로 바로 실행
+
+```bash
+adb install -r apk/Audeo_AudeoPassenger_release.apk
+```
+
+1. 앱을 켜고 마이크·위치 권한을 허용해요.
+2. 등록 화면에 이름과 전화번호를 넣고, 초대 코드 칸에는 **아무 글자**나 넣어요(심사 기간에는 서버가 초대 코드를 확인하지 않아요).
+3. 차량 앱(Pleos Connect 에뮬레이터)의 연락처에 이 사람이 나타나고, 서로 전화를 걸 수 있어요.
+
+차량 앱만으로도 시연할 수 있어요. 서버의 시연 탑승자 **지호 (시연)**이 탑승자 역할을 대신해요. 이 앱은 실제 사람이 탑승자로 참여할 때 써요.
 
 ## 화면
 
