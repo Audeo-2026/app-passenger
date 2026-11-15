@@ -1,0 +1,78 @@
+# Audeo 탑승자 앱 (Android · iOS)
+
+현대자동차그룹 차량용 앱 개발 공모전 출품작 **Audeo**의 탑승자 앱입니다. 운전자 차(Pleos Connect)와 통화하면 AI 비서 오디가 대화를 듣고 픽업 약속(만날 시각·장소)을 정리해요. 탑승자 화면은 그 결과를 보여 주고, 차가 가까워지면 차가 있는 방향을 알려 줍니다.
+
+Kotlin Multiplatform + Compose Multiplatform으로 Android와 iOS를 한 코드로 만듭니다. 차량 앱 레포(`Audeo-2026/audeo-app`)의 탑승자 테스트 페이지(`tools/web_passenger/index.html`)를 앱으로 옮긴 것이에요.
+
+## 화면
+
+탑승자 웹과 같이 네 가지만 보여 줍니다. 늦는다는 말 같은 건 따로 입력하는 화면 없이 **운전자에게 전화**해서 말해요(오디가 통화를 듣고 계획 변경을 물어요).
+
+| 카드 | 내용 |
+| --- | --- |
+| 통화 | 전화를 기다리는 중 → 전화가 왔어요(**동의하고 받기** / 그냥 받기 / 거절) → 통화 중(마이크·스피커·끊기). 픽업이 있으면 **○○에게 전화** |
+| 다이얼로그 | 서버가 보낸 제안. 결정자가 탑승자(`approver=passenger`)일 때만 고르는 버튼이 있고, 운전자가 정하는 제안은 내용만 보여 줘요 |
+| 지도 | 만날 곳·차·내 위치를 한 화면에 맞춰 보여 줘요. 타고 오는 열차가 확인되면 열차 번호도 보여 줘요 |
+| 나침반 | 차가 300m 안으로 오면 지도 대신 떠요(iPhone '나의 찾기'처럼). 화살표가 차 쪽을 가리키고, 차가 앞쪽에 오면 카드가 파래져요. GPS 오차 안쪽이면 '바로 근처' |
+
+## 동작
+
+- **서버**: Audeo 서버 v1(`/api/v1`)에 초대 코드로 `phone` 기기를 등록하고, 받은 기기 토큰으로 부릅니다. 실시간 이벤트(통화 상태, 제안, 픽업, 조율, 오디의 말, 통화 신호)는 WebSocket(`/ws`)으로 받아요. 앱을 켤 때는 지난 이벤트를 건너뛰어요(끝난 전화가 다시 울리지 않게).
+- **통화 음성**: WebRTC(음성만)로 차와 휴대폰이 직접 연결되고, 서버는 신호(offer/answer/ice)만 전달해요. 건 쪽이 offer를 보냅니다. AI 분석에 동의하지 않아도 일반 통화는 그대로 돼요.
+- **데이터 채널**: 같은 연결에 `audeo` 채널을 열어 2초마다 내 정밀 위치(`{"t":"loc"}`)를 차로 보내고, 차가 보낸 차 위치(`loc`)와 알림(`note`)을 받아요. 서버를 거치지 않습니다.
+- **차 위치**: 만날 곳이 정해진 픽업에서는 `GET /journeys/{id}/car`를 5초마다 물어요. 픽업이 끝나면 서버가 409로 닫아요.
+- **내 위치·방향**: Android는 LocationManager(GPS·네트워크)와 회전 벡터 센서(편각으로 진북 보정), iOS는 CLLocationManager(위치·방향).
+- **지도**: 무료 래스터 타일(CARTO `light_all`/`dark_all`, OpenStreetMap 데이터)을 받아 Compose Canvas에 그립니다. 보이는 점이 바뀔 때만 화면을 다시 맞춰요.
+
+## 개발 환경
+
+- JDK 17 이상, Android Studio(또는 Android SDK), Xcode 16 이상, CocoaPods
+- Kotlin 2.3.20 · Compose Multiplatform 1.10.3 · Ktor 3.5.2 · [webrtc-kmp](https://github.com/shepeliev/webrtc-kmp) 0.125.11 (iOS는 CocoaPods `WebRTC-SDK`)
+
+`local.properties`(Git에 올리지 않아요)에 서버 설정을 넣습니다. 빌드할 때 `AudeoConfig`로 들어가요.
+
+```properties
+sdk.dir=/Users/<나>/Library/Android/sdk
+
+audeo.api.baseUrl=https://audeo.mosslab.dev/api/v1/
+audeo.inviteCode=<초대 코드>
+
+# 처음 실행할 때 등록 화면에 미리 넣어 둘 값(개발용, 비워도 돼요)
+audeo.passenger.name=김민지
+audeo.passenger.shortName=민지
+audeo.passenger.phone=010-0000-0002
+```
+
+같은 전화번호로 등록하면 서버가 같은 사람으로 묶어요. 운전자 차량 앱과 같은 초대 코드를 쓰세요.
+
+## 실행
+
+### Android
+
+```bash
+./gradlew :composeApp:installDebug
+```
+
+처음 켜면 마이크와 위치 권한을 물어요.
+
+### iOS
+
+```bash
+./gradlew :composeApp:podInstall
+open iosApp/iosApp.xcworkspace
+```
+
+Xcode에서 `iosApp` 스킴을 고르고 실행합니다. 실제 iPhone에 설치하려면 `iosApp/Configuration/Config.xcconfig`의 `TEAM_ID`를 채우세요. 나침반은 실제 기기에서만 동작해요.
+
+## 코드 위치
+
+- `composeApp/src/commonMain/kotlin/com/audeo/phone/AppController.kt`: 화면 흐름. 서버 이벤트로 통화·픽업·제안을 정하고, 지도/나침반 전환을 계산해요.
+- `.../net/`: 서버 클라이언트(`AudeoApi`), 응답 해석(`Protocol`, 차량 앱과 같은 규칙), 모델
+- `.../call/CallSession.kt`: WebRTC 통화 음성과 데이터 채널
+- `.../ui/`: 디자인 시스템 컴포넌트(차량 앱과 같은 색·글자), 화면(`Screens.kt`), 지도(`TileMap.kt`), 나침반(`Finder.kt`)
+- `.../Platform.kt` + `androidMain`/`iosMain`: 저장소, 위치·방향, 통화 음성 경로(스피커)
+
+## 알아 둘 점
+
+- 지금 서버(`GET /rtc/config`)는 STUN만 주고 TURN이 없어요. 같은 와이파이나 일반 공유기에서는 통화가 잘 되지만, 휴대폰 데이터망끼리처럼 막힌 망에서는 음성이 연결되지 않을 수 있어요.
+- 지도 타일은 CARTO 무료 베이스맵이라 지도 아래에 출처(© OpenStreetMap © CARTO)를 표시합니다.

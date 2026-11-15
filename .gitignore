@@ -1,0 +1,16 @@
+.gradle/
+.kotlin/
+build/
+/local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+
+# iOS
+iosApp/Pods/
+iosApp/*.xcworkspace/
+iosApp/Podfile.lock
+xcuserdata/
+DerivedData/
+composeApp/composeApp.podspec

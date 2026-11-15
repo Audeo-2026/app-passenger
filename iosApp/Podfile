@@ -1,0 +1,8 @@
+# iOS 앱은 CocoaPods로 공통 모듈(composeApp)과 WebRTC-SDK를 붙입니다.
+# 처음 한 번: ./gradlew :composeApp:podInstall  (또는 iosApp 폴더에서 pod install)
+platform :ios, '15.0'
+
+target 'iosApp' do
+  use_frameworks!
+  pod 'composeApp', :path => '../composeApp'
+end
