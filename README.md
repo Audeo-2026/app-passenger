@@ -49,7 +49,7 @@ adb install -r apk/Audeo_AudeoPassenger_release.apk
 - **다이얼로그**: 새 제안 이벤트 말고도, 픽업의 `pending_proposals`에 아직 못 본 제안이 있으면 `GET /journeys/{id}/proposals`로 불러와요(앱을 늦게 켜도 떠 있는 제안이 보여요). 고를 때는 제안의 `base_version`을 같이 보내고, 그사이 계획이 바뀌어 409가 오면 새 제안을 다시 불러와요.
 - **위치 공유**: 서버가 픽업에 위치 공유를 켜면(`location_sharing`) 차 위치를 `GET /journeys/{id}/car`로 5초마다 받고, 내 위치를 `POST /journeys/{id}/status`로 15초마다 보내요(서버가 조율에 탑승자 줄을 채워요). 픽업이 끝나면 서버가 409로 닫아요.
 - **내 위치·방향**: Android는 LocationManager(GPS·네트워크)와 회전 벡터 센서(편각으로 진북 보정), iOS는 CLLocationManager(위치·방향).
-- **지도**: 무료 래스터 타일(CARTO `light_all`/`dark_all`, OpenStreetMap 데이터)을 받아 Compose Canvas에 그립니다. 보이는 점이 바뀔 때만 화면을 다시 맞춰요.
+- **지도**: 키 없이 쓰는 OpenStreetMap 기본 래스터 타일을 받아 Compose Canvas에 그립니다. 밤에는 같은 타일을 색 필터로 어둡게 그려요. 보이는 점이 바뀔 때만 화면을 다시 맞춰요.
 
 ## 개발 환경
 
@@ -104,4 +104,4 @@ Xcode에서 `iosApp` 스킴을 고르고 실행합니다. 실제 iPhone에 설�
 - 지금 서버(`GET /rtc/config`)는 STUN만 주고 TURN이 없어요(서버의 `AUDEO_TURN_URLS`가 있어야 TURN을 줘요). 같은 와이파이나 일반 공유기에서는 통화가 잘 되지만, 휴대폰 데이터망끼리처럼 막힌 망에서는 음성이 연결되지 않을 수 있어요.
 - 푸시 알림은 아직 없어요. 서버는 `PATCH /devices/me`의 `push_token`을 받지만, 앱에 Firebase(Android)·APNs(iOS) 설정이 필요해요. 그 전에는 앱이 꺼져 있거나 iOS에서 백그라운드면 전화가 와도 알 수 없어요.
 - 탑승자 화면을 최소로 두려고 '차 탔어요'(완료), 취소, 음성 명령, 값 수정 API는 일부러 쓰지 않아요. 늦어지는 일은 운전자에게 전화해서 말해요.
-- 지도 타일은 CARTO 무료 베이스맵이라 지도 아래에 출처(© OpenStreetMap © CARTO)를 표시합니다.
+- 지도 타일은 OpenStreetMap 타일 서버를 쓰므로 지도 아래에 출처(© OpenStreetMap)를 표시하고, 타일 정책에 맞춰 앱을 알아볼 수 있는 User-Agent를 보냅니다.

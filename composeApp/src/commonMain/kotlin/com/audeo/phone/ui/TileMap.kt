@@ -17,6 +17,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -59,7 +61,9 @@ import kotlin.math.sin
 
 /**
  * 만날 곳·차·내 위치를 한 화면에 맞춰 보여 주는 지도(탑승자 웹의 MapLibre 지도 대신).
- * 무료 래스터 타일(CARTO, OpenStreetMap 데이터)을 받아 Canvas에 그리고, 그 위에 표시를 그립니다.
+ * 키 없이 쓰는 OpenStreetMap 기본 타일을 받아 Canvas에 그리고, 그 위에 표시를 그립니다.
+ * (예전 CARTO 타일은 키 없이 요청하면 'API KEY REQUIRED' 그림만 줘서 바꿨어요.)
+ * 낮에는 색을 조금 빼서 표시가 잘 보이게 하고, 밤에는 같은 타일을 색 필터로 뒤집어 어둡게 그려요.
  * 보이는 점의 개수나 만날 곳이 바뀔 때만 화면을 다시 맞춰서, 위치가 조금씩 움직일 때 지도가 흔들리지 않아요.
  */
 @Composable
@@ -75,17 +79,19 @@ fun TileMap(meet: Place, car: CarPos?, me: GeoPos?, modifier: Modifier = Modifie
         val fitKey = "${points.size}:${meet.lat}:${meet.lng}:$w:$h"
         val view = remember(fitKey) { MapView.fit(points, w, h, density.toDouble()) }
         val tiles = remember(view, w, h) { view.visibleTiles(w, h) }
-        LaunchedEffect(tiles, night) { tiles.forEach { t -> launch { TileCache.load(t, night) } } }
+        LaunchedEffect(tiles) { tiles.forEach { t -> launch { TileCache.load(t) } } }
+        val tileFilter = if (night) NIGHT_TILES else DAY_TILES
 
         Canvas(Modifier.fillMaxSize()) {
             tiles.forEach { t ->
-                val img = TileCache.get(t, night) ?: return@forEach
+                val img = TileCache.get(t) ?: return@forEach
                 val x = t.x * view.tilePx - view.originX
                 val y = t.y * view.tilePx - view.originY
                 drawImage(
                     img,
                     dstOffset = IntOffset(floor(x).toInt(), floor(y).toInt()),
                     dstSize = IntSize(view.tilePx.roundToInt() + 1, view.tilePx.roundToInt() + 1),
+                    colorFilter = tileFilter,
                 )
             }
             me?.let { drawMe(view.screen(it.lat, it.lng), it, view) }
@@ -94,13 +100,31 @@ fun TileMap(meet: Place, car: CarPos?, me: GeoPos?, modifier: Modifier = Modifie
             drawPin(measurer, view.screen(meet.lat, meet.lng), meet.name, pinStyle, c.brand, border = false)
         }
         Text(
-            "© OpenStreetMap © CARTO",
+            "© OpenStreetMap",
             style = AudeoType.label.copy(fontSize = 10.sp),
             color = c.inkMuted,
             modifier = Modifier.align(Alignment.BottomEnd).background(c.surface.copy(alpha = 0.75f)).padding(horizontal = 4.dp, vertical = 1.dp),
         )
     }
 }
+
+/** 낮: 색을 조금 뺀 OpenStreetMap. */
+private val DAY_TILES = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0.45f) })
+
+/**
+ * 밤: 색 반전 + 색상 180° 회전(글자·도로 색은 그대로 알아보게) + 채도 0.25 + 밝기 0.82를 한 행렬로 합친 것.
+ * 밝은 바탕(#F2EFE9)이 앱 지도 바탕(mapLand #0F1114)에 가까운 색이 돼요.
+ */
+private val NIGHT_TILES = ColorFilter.colorMatrix(
+    ColorMatrix(
+        floatArrayOf(
+            -0.014f, -0.733f, -0.074f, 0f, 209.1f,
+            -0.219f, -0.528f, -0.074f, 0f, 209.1f,
+            -0.219f, -0.733f, 0.131f, 0f, 209.1f,
+            0f, 0f, 0f, 1f, 0f,
+        ),
+    ),
+)
 
 private fun DrawScope.drawMe(p: Offset, me: GeoPos, view: MapView) {
     val blue = Color(0xFF1A73E8)
@@ -195,21 +219,20 @@ private object TileCache {
     private val order = ArrayDeque<String>()
     private val loading = HashSet<String>()
 
-    private fun key(t: TileId, night: Boolean) = "${if (night) "d" else "l"}/${t.z}/${t.x}/${t.y}"
+    private fun key(t: TileId) = "${t.z}/${t.x}/${t.y}"
 
-    fun get(t: TileId, night: Boolean): ImageBitmap? = images[key(t, night)]
+    fun get(t: TileId): ImageBitmap? = images[key(t)]
 
     @OptIn(ExperimentalResourceApi::class)
-    suspend fun load(t: TileId, night: Boolean) {
-        val k = key(t, night)
+    suspend fun load(t: TileId) {
+        val k = key(t)
         if (images.containsKey(k) || !loading.add(k)) return
         try {
             val n = 1 shl t.z
             val x = ((t.x % n) + n) % n
-            val sub = "abcd"[(x + t.y) % 4]
-            val style = if (night) "dark_all" else "light_all"
-            val res = client.get("https://$sub.basemaps.cartocdn.com/$style/${t.z}/$x/${t.y}@2x.png") {
-                header("User-Agent", "AudeoPassenger/0.1")
+            // OSM 타일 정책: 앱을 알아볼 수 있는 User-Agent를 보내야 해요(없거나 흔한 값이면 막혀요).
+            val res = client.get("https://tile.openstreetmap.org/${t.z}/$x/${t.y}.png") {
+                header("User-Agent", "AudeoPassenger/0.1 (+https://github.com/Audeo-2026/app-passenger)")
             }
             if (!res.status.isSuccess()) return
             val bytes: ByteArray = res.body()
