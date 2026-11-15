@@ -143,7 +143,8 @@ private fun CallCard(s: UiState, app: AppController) {
             },
         )
 
-        call.status == CallStatus.RINGING && !call.outgoing -> AudeoDialog(
+        // 상대가 Audeo와 같이 듣자고 건 전화: 동의를 묻습니다.
+        call.status == CallStatus.RINGING && !call.outgoing && call.analysisRequested -> AudeoDialog(
             tone = Tone.BRAND,
             kicker = "전화가 왔어요",
             title = "${call.peerCallName} 전화예요",
@@ -155,12 +156,27 @@ private fun CallCard(s: UiState, app: AppController) {
             },
         )
 
+        // 상대가 AI 없이 건 전화: 동의를 묻지 않고 일반 통화로 받아요.
+        call.status == CallStatus.RINGING && !call.outgoing -> AudeoDialog(
+            tone = Tone.BRAND,
+            kicker = "전화가 왔어요",
+            title = "${call.peerCallName} 전화예요",
+            subtitle = "일반 통화예요 · Audeo는 듣지 않아요",
+            actions = {
+                AudeoButton("받기", { app.answer(false) }, variant = ButtonVariant.PRIMARY, icon = AudeoIcon.Phone, enabled = !s.busy)
+                AudeoButton("거절", app::reject, variant = ButtonVariant.DANGER, enabled = !s.busy)
+            },
+        )
+
         call.status == CallStatus.RINGING -> AudeoDialog(
             tone = Tone.BRAND,
             kicker = "통화",
             title = "${peer}에게 거는 중",
-            subtitle = "받으면 Audeo가 같이 들어요",
-            actions = { AudeoButton("취소", app::hangup, variant = ButtonVariant.DANGER, icon = AudeoIcon.PhoneEnd, enabled = !s.busy) },
+            subtitle = if (call.wantsAnalysis) "받으면 Audeo가 같이 들어요" else "일반 통화로 걸고 있어요 · Audeo는 듣지 않아요",
+            actions = {
+                if (call.wantsAnalysis) AudeoButton("AI 없이 걸기", app::callWithoutAi, enabled = !s.busy)
+                AudeoButton("취소", app::hangup, variant = ButtonVariant.DANGER, icon = AudeoIcon.PhoneEnd, enabled = !s.busy)
+            },
         )
 
         else -> AudeoDialog(
@@ -216,6 +232,7 @@ private fun WhereCard(j: Journey, s: UiState) {
         kicker = "만날 곳",
         title = "${meet.name}에서 만나요",
         subtitle = bits.joinToString(" · ").ifEmpty { null },
+        footnote = if (j.locationSharing) "픽업하는 동안 내 위치를 운전자와 공유해요 · 픽업이 끝나면 멈춰요" else null,
     ) {
         j.ride?.let { RideRow(it) }
         TileMap(meet, s.car, s.me, Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(14.dp)))

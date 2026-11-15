@@ -19,8 +19,13 @@ data class CallInfo(
     val analysisOn: Boolean,
     /** 상대방의 AI 분석 동의: pending, granted, declined. */
     val peerConsent: String?,
+    /** 내 AI 분석 동의: pending, granted, declined. */
+    val myConsent: String?,
     val journeyId: String?,
-)
+) {
+    /** 이 통화를 Audeo가 같이 들으려는지(요청했고 내가 거두지 않았는지). */
+    val wantsAnalysis: Boolean get() = analysisRequested && myConsent != "declined"
+}
 
 enum class Source(val label: String) { CONVERSATION("대화"), LOOKUP("조회"), ESTIMATE("추정"), CONFIRM("확인 필요"), USER("직접 입력") }
 
@@ -50,6 +55,8 @@ data class Proposal(
     val footnote: String?,
     val approver: String?,
     val audience: List<String>,
+    /** 이 제안을 만들 때의 여정 버전. 고를 때 같이 보내면 그사이 계획이 바뀌었는지 서버가 확인해요. */
+    val baseVersion: Int?,
 )
 
 data class Place(val name: String, val lat: Double, val lng: Double)
@@ -67,6 +74,11 @@ data class Journey(
     val meetPlace: Place?,
     val meetAtLabel: String?,
     val waitPlace: Place?,
+    val version: Int,
+    /** 위치 공유가 켜졌는지(계획·진행 중 여정). 켜져 있을 때만 차 위치를 주고 내 위치를 받아요. */
+    val locationSharing: Boolean,
+    /** 아직 결정되지 않은 제안 id. */
+    val pendingProposalIds: List<String>,
 ) {
     val ended: Boolean get() = status == "completed" || status == "cancelled"
 

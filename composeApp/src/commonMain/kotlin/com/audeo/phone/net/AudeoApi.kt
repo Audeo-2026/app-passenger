@@ -3,9 +3,11 @@ package com.audeo.phone.net
 import com.audeo.phone.AudeoConfig
 import com.audeo.phone.Prefs
 import com.audeo.phone.createHttpClient
+import com.audeo.phone.isoNow
 import com.audeo.phone.nowMillis
 import com.audeo.phone.parseIsoMillis
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.header
@@ -90,13 +92,21 @@ class AudeoApi {
     suspend fun latestSeq(): Long =
         (authed(HttpMethod.Get, "events?after_seq=0&wait_s=0")["last_seq"] as? JsonPrimitive)?.longOrNull ?: 0L
 
-    suspend fun startCall(calleeId: String, analysis: Boolean): CallInfo = call(
+    /** 전화 걸기. 픽업 중에 거는 전화면 journeyId를 같이 보내 어느 약속 이야기인지 서버가 알게 해요. */
+    suspend fun startCall(calleeId: String, analysis: Boolean, journeyId: String? = null): CallInfo = call(
         authed(HttpMethod.Post, "calls", buildJsonObject {
             put("callee_id", calleeId)
             put("analysis_requested", analysis)
             put("caller_role", "passenger")
+            journeyId?.let { put("journey_id", it) }
         }),
     )
+
+    suspend fun getCall(callId: String): CallInfo = call(authed(HttpMethod.Get, "calls/$callId"))
+
+    /** 내 AI 분석 동의를 바꿔요(거는 중 'AI 없이 걸기'). */
+    suspend fun consent(callId: String, granted: Boolean): CallInfo =
+        call(authed(HttpMethod.Put, "calls/$callId/consent", buildJsonObject { put("granted", granted) }))
 
     suspend fun answer(callId: String, consent: Boolean): CallInfo =
         call(authed(HttpMethod.Post, "calls/$callId/answer", buildJsonObject { put("analysis_consent", consent) }))
@@ -129,8 +139,44 @@ class AudeoApi {
     suspend fun car(journeyId: String): CarPos? =
         authed(HttpMethod.Get, "journeys/$journeyId/car").obj("car")?.let { Protocol.car(it, nowMillis(), ::parseIsoMillis) }
 
-    suspend fun decide(proposalId: String, optionId: String): Proposal =
-        Protocol.proposal(authed(HttpMethod.Post, "proposals/$proposalId/decision", buildJsonObject { put("option_id", optionId); put("via", "button") }))
+    /** 아직 결정되지 않은 제안. 앱을 켜기 전에 만들어진 제안도 보여 주려고 씁니다. */
+    suspend fun proposals(journeyId: String): List<Proposal> =
+        authed(HttpMethod.Get, "journeys/$journeyId/proposals?status=pending").objs("proposals").map(Protocol::proposal)
+
+    /** 제안 고르기. baseVersion을 같이 보내면 그사이 계획이 바뀐 경우 서버가 409로 알려 줘요. */
+    suspend fun decide(proposalId: String, optionId: String, baseVersion: Int?): Proposal =
+        Protocol.proposal(
+            authed(HttpMethod.Post, "proposals/$proposalId/decision", buildJsonObject {
+                put("option_id", optionId)
+                put("via", "button")
+                baseVersion?.let { put("base_version", it) }
+            }),
+        )
+
+    /**
+     * 탑승자 상태 보고(정의서 2-①-1). 역할은 토큰으로 정해져요. 서버가 탑승자 위치를 알아야
+     * 조율(누가 언제 도착하는지)에 탑승자 줄을 채울 수 있어요. clientSeq는 기기마다 늘 커져야 해요.
+     */
+    suspend fun reportStatus(journeyId: String, clientSeq: Long, pos: GeoPos, heading: Double?) {
+        authed(HttpMethod.Post, "journeys/$journeyId/status", buildJsonObject {
+            put("client_seq", clientSeq)
+            put("observed_at", isoNow())
+            put("location", buildJsonObject {
+                put("lat", pos.lat)
+                put("lng", pos.lng)
+                heading?.let { put("heading", it) }
+            })
+        })
+    }
+
+    /** WebSocket을 못 쓸 때의 long-poll. 통화 신호(rtc.signal)는 WebSocket으로만 와요. */
+    suspend fun events(afterSeq: Long, waitSeconds: Int): Pair<List<ServerEvent>, Long> {
+        val o = authed(HttpMethod.Get, "events?after_seq=$afterSeq&wait_s=$waitSeconds", timeoutMs = (waitSeconds + 15) * 1000L)
+        val me = identity?.userId
+        val events = o.objs("events").map { Protocol.event(it, me) }
+        val last = (o["last_seq"] as? JsonPrimitive)?.longOrNull ?: events.maxOfOrNull { it.seq } ?: afterSeq
+        return events to last
+    }
 
     /** WebSocket 이벤트. 연결이 끊기면 돌아오고, 실패는 예외로 알립니다. */
     suspend fun streamEvents(afterSeq: Long, onOpen: () -> Unit, onEvent: suspend (ServerEvent) -> Unit) {
@@ -164,14 +210,15 @@ class AudeoApi {
 
     private fun call(o: JsonObject) = Protocol.call(o, identity?.userId)
 
-    private suspend fun authed(method: HttpMethod, path: String, body: JsonObject? = null): JsonObject {
+    private suspend fun authed(method: HttpMethod, path: String, body: JsonObject? = null, timeoutMs: Long? = null): JsonObject {
         val token = identity?.token ?: throw ApiError(401, "no_device", "등록된 기기가 없어요")
-        return request(method, path, body, token)
+        return request(method, path, body, token, timeoutMs)
     }
 
-    private suspend fun request(method: HttpMethod, path: String, body: JsonObject?, token: String?): JsonObject {
+    private suspend fun request(method: HttpMethod, path: String, body: JsonObject?, token: String?, timeoutMs: Long? = null): JsonObject {
         val res = client.request("$base/${path.trimStart('/')}") {
             this.method = method
+            timeoutMs?.let { ms -> timeout { requestTimeoutMillis = ms } }
             header("Accept", "application/json")
             token?.let { header("Authorization", "Bearer $it") }
             if (body != null) {

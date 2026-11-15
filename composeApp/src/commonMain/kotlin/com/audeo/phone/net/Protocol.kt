@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 
 internal fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull?.ifEmpty { null }
@@ -17,6 +18,7 @@ internal fun JsonObject.arr(key: String): List<JsonElement> = (this[key] as? Jso
 internal fun JsonObject.objs(key: String): List<JsonObject> = arr(key).filterIsInstance<JsonObject>()
 internal fun JsonObject.strings(key: String): List<String> = arr(key).mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
 private fun JsonObject.dbl(key: String): Double? = (this[key] as? JsonPrimitive)?.doubleOrNull
+private fun JsonObject.int(key: String): Int? = (this[key] as? JsonPrimitive)?.intOrNull
 
 /** 서버 JSON → 앱 모델. 차량 앱(com.audeo.app.server.Protocol)과 같은 규칙입니다. */
 object Protocol {
@@ -43,6 +45,7 @@ object Protocol {
             analysisRequested = o.bool("analysis_requested"),
             analysisOn = o.bool("analysis_on"),
             peerConsent = o.objs("participants").firstOrNull { it.str("user_id") == peerId }?.str("consent"),
+            myConsent = myUserId?.let { me -> o.objs("participants").firstOrNull { it.str("user_id") == me }?.str("consent") },
             journeyId = o.str("journey_id"),
         )
     }
@@ -91,6 +94,9 @@ object Protocol {
             meetPlace = plan?.obj("meet_place")?.let(::place),
             meetAtLabel = plan?.str("meet_at_label"),
             waitPlace = plan?.obj("wait_place")?.let(::place),
+            version = o.int("version") ?: 0,
+            locationSharing = o.bool("location_sharing"),
+            pendingProposalIds = o.strings("pending_proposals"),
         )
     }
 
@@ -123,6 +129,7 @@ object Protocol {
         footnote = o.str("footnote"),
         approver = o.str("approver"),
         audience = o.strings("audience"),
+        baseVersion = o.int("base_version"),
     )
 
     fun coordination(o: JsonObject): Coordination {

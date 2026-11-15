@@ -68,3 +68,7 @@ fun nowMillis(): Long = Clock.System.now().toEpochMilliseconds()
 
 @OptIn(ExperimentalTime::class)
 fun parseIsoMillis(s: String): Long? = runCatching { Instant.parse(s).toEpochMilliseconds() }.getOrNull()
+
+/** 지금 시각(ISO 8601, UTC). 서버 observed_at용. */
+@OptIn(ExperimentalTime::class)
+fun isoNow(): String = Clock.System.now().toString()

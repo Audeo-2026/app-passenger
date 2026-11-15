@@ -158,7 +158,27 @@ class AppController {
         scope.launch {
             val seq = runCatching { api.latestSeq() }.getOrElse { api.lastSeq }
             startEvents(seq)
+            recoverCall()
             refreshJourney()
+        }
+    }
+
+    /**
+     * 앱이 다시 켜졌을 때 이 기기가 쓰던 통화를 이어 보여 줍니다(GET /calls/{id}).
+     * 울리는 중이면 그대로 보여 주고, 이미 연결됐던 통화는 음성을 다시 이을 수 없어서 끝내요
+     * (그대로 두면 차에는 통화 중인데 아무 소리도 안 나는 통화가 남아요).
+     */
+    private suspend fun recoverCall() {
+        val id = Prefs.get(K_CALL_ID) ?: return
+        val call = runCatching { api.getCall(id) }.getOrNull()
+        when (call?.status) {
+            CallStatus.RINGING -> onCallState(call)
+            CallStatus.ACTIVE -> {
+                runCatching { api.endCall(id) }
+                Prefs.set(K_CALL_ID, null)
+                showBanner(false, "앱이 다시 켜져서 이전 통화를 끝냈어요")
+            }
+            else -> Prefs.set(K_CALL_ID, null)
         }
     }
 
@@ -187,18 +207,39 @@ class AppController {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    if (e is ApiError && e.status == 401) {
-                        api.signOut()
-                        _state.update { UiState() }
-                        return@launch
-                    }
+                    if (e is ApiError && e.status == 401) return@launch signedOut()
                     log("실시간 연결 끊김: ${e.message}")
                 }
                 failures++
                 _state.update { it.copy(online = false) }
+                if (failures >= 2) {
+                    // WebSocket이 계속 막히면 long-poll(GET /events)로 이벤트를 받고 다시 WebSocket을 시도해요.
+                    // 통화 신호(rtc.signal)는 WebSocket으로만 와서, 이 동안에는 음성 연결이 안 될 수 있어요.
+                    try {
+                        val (events, _) = api.events(after, LONG_POLL_S)
+                        for (e in events) {
+                            if (e.seq in 1..after) continue
+                            withContext(Dispatchers.Main) { handle(e) }
+                            if (e.seq > after) after = e.seq
+                        }
+                        api.lastSeq = after
+                        continue
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (e is ApiError && e.status == 401) return@launch signedOut()
+                        log("long-poll 실패: ${e.message}")
+                    }
+                }
                 delay(minOf(30_000L, 1_500L * failures))
             }
         }
+    }
+
+    private fun signedOut() {
+        api.signOut()
+        Prefs.set(K_CALL_ID, null)
+        _state.update { UiState() }
     }
 
     // ---------- 이벤트 ----------
@@ -207,6 +248,7 @@ class AppController {
         when (e) {
             is ServerEvent.CallIncoming -> {
                 e.call.peerUserId?.let { lastPeer = it to e.call.peerCallName }
+                Prefs.set(K_CALL_ID, e.call.id)
                 _state.update { it.copy(call = e.call) }
             }
             is ServerEvent.CallState -> onCallState(e.call)
@@ -234,6 +276,7 @@ class AppController {
         if (cur != null && cur.id != call.id && call.status == CallStatus.ENDED) return
         val prev = cur?.takeIf { it.id == call.id }?.status
         call.peerUserId?.let { lastPeer = it to call.peerCallName }
+        Prefs.set(K_CALL_ID, if (call.status == CallStatus.ENDED) null else call.id)
         when (call.status) {
             CallStatus.RINGING -> _state.update { it.copy(call = call) }
             CallStatus.ACTIVE -> {
@@ -320,15 +363,83 @@ class AppController {
             if (_state.value.etaLabel == null && (journey.status == "planned" || journey.status == "active")) {
                 scope.launch { runCatching { api.coordination(journey.id) }.getOrNull()?.etaLabel?.let { eta -> _state.update { it.copy(etaLabel = eta) } } }
             }
+            syncProposals(journey)
         }
         pollCar()
+        syncStatusReports()
         updateFinder()
     }
 
-    /** 계획이 정해진 픽업에서만 차 위치를 5초마다 물어요. 픽업이 끝나면 서버가 409로 위치 공유를 닫아요. */
+    /**
+     * 앱을 켜기 전(또는 연결이 끊긴 사이)에 만들어진 제안도 보여 줍니다.
+     * 여정의 pending_proposals에 아직 못 본 제안이 있으면 GET /journeys/{id}/proposals 로 불러와요.
+     */
+    private var proposalsSyncedFor: String? = null
+
+    private fun syncProposals(j: Journey) {
+        if (_state.value.proposal != null || j.pendingProposalIds.isEmpty()) return
+        val key = j.id + ":" + j.pendingProposalIds.joinToString(",")
+        if (key == proposalsSyncedFor) return
+        proposalsSyncedFor = key
+        scope.launch { loadProposals(j.id) }
+    }
+
+    private suspend fun loadProposals(journeyId: String) {
+        runCatching { api.proposals(journeyId) }
+            .onSuccess { list ->
+                if (_state.value.journey?.id != journeyId) return@onSuccess
+                list.lastOrNull { "passenger" in it.audience }?.let(::onProposal)
+            }
+            .onFailure { log("제안을 못 불러왔어요: ${it.message}") }
+    }
+
+    /**
+     * 탑승자 상태 보고(POST /journeys/{id}/status). 위치 공유가 켜진 계획·진행 중 픽업에서만
+     * 15초마다 내 위치를 서버에 알려요. 서버가 이걸로 조율(누가 언제 도착하는지)에 탑승자 줄을 채워요.
+     * 통화 중 데이터 채널로 차에 보내는 위치와는 따로예요.
+     */
+    private var statusJob: Job? = null
+    private var statusFor: String? = null
+
+    private fun syncStatusReports() {
+        val j = _state.value.journey
+        val id = j?.takeIf { it.locationSharing && (it.status == "planned" || it.status == "active") }?.id
+        if (id == statusFor && statusJob?.isActive == true) return
+        statusJob?.cancel()
+        statusFor = id
+        if (id == null) return
+        startLocating()
+        statusJob = scope.launch {
+            while (isActive) {
+                val p = _state.value.me
+                if (p == null) {
+                    delay(3_000)
+                    continue
+                }
+                try {
+                    api.reportStatus(id, nextStatusSeq(), p, heading)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (e is ApiError && e.status == 409) return@launch // 픽업이 끝나 위치 공유가 꺼졌어요
+                    log("상태 보고 실패: ${e.message}")
+                }
+                delay(STATUS_EVERY_MS)
+            }
+        }
+    }
+
+    /** 상태 보고 번호. 서버가 같은 번호를 중복으로 버리니 늘 키우고, 앱을 다시 깔아도 줄지 않게 시각보다 작아지지 않게 해요. */
+    private fun nextStatusSeq(): Long {
+        val next = maxOf((Prefs.get(K_STATUS_SEQ)?.toLongOrNull() ?: 0L) + 1, nowMillis())
+        Prefs.set(K_STATUS_SEQ, next.toString())
+        return next
+    }
+
+    /** 위치 공유가 켜진 픽업에서만 차 위치를 5초마다 물어요. 픽업이 끝나면 서버가 409로 위치 공유를 닫아요. */
     private fun pollCar() {
         val j = _state.value.journey
-        val id = j?.takeIf { it.meetPlace != null }?.id
+        val id = j?.takeIf { it.meetPlace != null && it.locationSharing }?.id
         if (id == carJobFor && carJob?.isActive == true) return
         carJob?.cancel()
         carJobFor = id
@@ -384,6 +495,7 @@ class AppController {
 
     private fun stopLocating() {
         if (_state.value.call?.status == CallStatus.ACTIVE) return // 통화 중에는 위치 공유를 이어가요
+        if (statusJob?.isActive == true) return // 픽업 위치 공유 중에도 이어가요
         if (!locating) return
         locating = false
         DeviceLocation.stop()
@@ -455,8 +567,12 @@ class AppController {
     /** '운전자에게 전화'. 늦어지는 일 같은 건 따로 알리는 화면 없이 통화로 말해요(오디가 듣고 계획 변경을 물어요). */
     fun callDriver() {
         val id = driverId() ?: return showBanner(false, "운전자 정보가 없어요")
-        act("전화를 걸지 못했어요") { onCallState(api.startCall(id, analysis = true)) }
+        val journeyId = _state.value.journey?.id
+        act("전화를 걸지 못했어요") { onCallState(api.startCall(id, analysis = true, journeyId = journeyId)) }
     }
+
+    /** 거는 중 'AI 없이 걸기': 내 AI 분석 동의를 거둬요(PUT /calls/{id}/consent). */
+    fun callWithoutAi() = withCall("AI 분석을 끄지 못했어요") { onCallState(api.consent(it.id, granted = false)) }
 
     fun toggleMute() {
         val muted = !_state.value.muted
@@ -470,9 +586,27 @@ class AppController {
         CallAudioRoute.setSpeaker(on)
     }
 
-    fun choose(p: Proposal, o: Option) = act("답을 보내지 못했어요") {
-        api.decide(p.id, o.id)
-        _state.update { if (it.proposal?.id == p.id) it.copy(proposal = null) else it }
+    fun choose(p: Proposal, o: Option) {
+        _state.update { it.copy(busy = true) }
+        scope.launch {
+            try {
+                api.decide(p.id, o.id, p.baseVersion)
+                _state.update { if (it.proposal?.id == p.id) it.copy(proposal = null) else it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (e is ApiError && e.status == 409) {
+                    // 그사이 계획이 바뀌었어요(base_version이 달라요). 새 제안을 다시 보여 줘요.
+                    _state.update { if (it.proposal?.id == p.id) it.copy(proposal = null) else it }
+                    showBanner(false, "그사이 계획이 바뀌었어요 · 새 내용을 확인해 주세요")
+                    loadProposals(p.journeyId)
+                } else {
+                    showBanner(false, "답을 보내지 못했어요: ${e.message}")
+                }
+            } finally {
+                _state.update { it.copy(busy = false) }
+            }
+        }
     }
 
     fun dismissBanner() = _state.update { it.copy(banner = null) }
@@ -588,5 +722,9 @@ class AppController {
     private companion object {
         const val NEAR_M = 300.0
         const val HERE_M = 15.0
+        const val LONG_POLL_S = 20
+        const val STATUS_EVERY_MS = 15_000L
+        const val K_CALL_ID = "audeo.call_id"
+        const val K_STATUS_SEQ = "audeo.status_seq"
     }
 }
