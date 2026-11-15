@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -176,7 +177,8 @@ class AppController {
                         },
                     ) { e ->
                         if (e.seq in 1..after) return@streamEvents // 다시 붙으며 또 온 지난 이벤트
-                        handle(e)
+                        // WebSocket은 엔진 스레드에서 읽힐 수 있어서, 화면 상태·위치·통화는 메인 스레드에서 다룹니다.
+                        withContext(Dispatchers.Main) { handle(e) }
                         if (e.seq > after) {
                             after = e.seq
                             api.lastSeq = after
@@ -362,11 +364,13 @@ class AppController {
         locating = true
         DeviceLocation.start(
             onFix = { p ->
+                if (_state.value.me == null) log("내 위치: ${p.lat}, ${p.lng} ±${p.acc?.roundToInt()}m")
                 _state.update { it.copy(me = p, locNote = null) }
                 sendLoc()
                 updateFinder()
             },
             onProblem = { problem ->
+                log("위치 문제: $problem")
                 val note = if (problem == LocationProblem.DENIED) "위치 권한이 없어 차 방향을 알려 줄 수 없어요" else "내 위치를 찾는 중이에요"
                 _state.update { it.copy(locNote = note) }
                 updateFinder()
@@ -489,6 +493,7 @@ class AppController {
 
     private fun closeCall() {
         locJob?.cancel()
+        locSent = false
         callSession.close()
         CallAudioRoute.end()
     }
@@ -508,14 +513,20 @@ class AppController {
 
     private fun sendLoc() {
         val p = _state.value.me ?: return
-        callSession.send(buildJsonObject {
+        val sent = callSession.send(buildJsonObject {
             put("t", "loc")
             put("lat", p.lat)
             put("lng", p.lng)
             p.acc?.let { put("acc", it) }
             put("at", nowMillis())
         })
+        // 보내기 시작할 때와, 보내다가 막혔을 때만 남깁니다(채널이 열리기 전에는 원래 못 보내요).
+        if (sent && !locSent) log("내 위치를 데이터 채널로 보내는 중")
+        if (!sent && locSent) log("내 위치를 데이터 채널로 보내지 못했어요")
+        locSent = sent
     }
+
+    private var locSent = false
 
     private fun onPeerMessage(m: JsonObject) {
         when (m.str("t")) {

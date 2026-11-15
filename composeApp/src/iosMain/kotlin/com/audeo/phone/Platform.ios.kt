@@ -17,10 +17,14 @@ import platform.CoreLocation.kCLAuthorizationStatusNotDetermined
 import platform.CoreLocation.kCLAuthorizationStatusRestricted
 import platform.CoreLocation.kCLDistanceFilterNone
 import platform.CoreLocation.kCLErrorDenied
+import platform.CoreLocation.kCLErrorLocationUnknown
 import platform.CoreLocation.kCLLocationAccuracyBest
 import platform.Foundation.NSError
+import platform.Foundation.NSThread
 import platform.Foundation.NSUserDefaults
 import platform.darwin.NSObject
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
 
 actual object Prefs {
     private val defaults = NSUserDefaults.standardUserDefaults
@@ -36,10 +40,15 @@ actual fun createHttpClient(): HttpClient = HttpClient(Darwin)
 
 actual val platformName: String = "iOS"
 
-/** CLLocationManager 하나로 위치(최고 정확도)와 방향(진북, 없으면 자북)을 받습니다. */
+/**
+ * CLLocationManager 하나로 위치(최고 정확도)와 방향(진북, 없으면 자북)을 받습니다.
+ * CLLocationManager는 만든 스레드의 런루프로 콜백을 보내서, 메인 스레드에서 만들고 다룹니다
+ * (다른 스레드에서 만들면 위치가 와도 콜백이 불리지 않아요).
+ */
 @OptIn(ExperimentalForeignApi::class)
 actual object DeviceLocation {
-    private val manager = CLLocationManager()
+    private var managerOrNull: CLLocationManager? = null
+    private val manager: CLLocationManager get() = managerOrNull ?: CLLocationManager().also { managerOrNull = it }
     private var onFix: ((GeoPos) -> Unit)? = null
     private var onProblem: ((LocationProblem) -> Unit)? = null
     private var onHeading: ((Double) -> Unit)? = null
@@ -53,6 +62,8 @@ actual object DeviceLocation {
         }
 
         override fun locationManager(manager: CLLocationManager, didFailWithError: NSError) {
+            // '아직 모름'(kCLErrorLocationUnknown)은 잠깐 생기는 오류라 계속 기다립니다(애플 문서 권장).
+            if (didFailWithError.code == kCLErrorLocationUnknown) return
             onProblem?.invoke(if (didFailWithError.code == kCLErrorDenied) LocationProblem.DENIED else LocationProblem.UNAVAILABLE)
         }
 
@@ -71,7 +82,7 @@ actual object DeviceLocation {
         }
     }
 
-    actual fun start(onFix: (GeoPos) -> Unit, onProblem: (LocationProblem) -> Unit, onHeading: (Double) -> Unit) {
+    actual fun start(onFix: (GeoPos) -> Unit, onProblem: (LocationProblem) -> Unit, onHeading: (Double) -> Unit) = onMain {
         this.onFix = onFix
         this.onProblem = onProblem
         this.onHeading = onHeading
@@ -91,13 +102,17 @@ actual object DeviceLocation {
         }
     }
 
-    actual fun stop() {
+    actual fun stop() = onMain {
         running = false
-        manager.stopUpdatingLocation()
-        manager.stopUpdatingHeading()
+        managerOrNull?.stopUpdatingLocation()
+        managerOrNull?.stopUpdatingHeading()
         onFix = null
         onProblem = null
         onHeading = null
+    }
+
+    private fun onMain(block: () -> Unit) {
+        if (NSThread.isMainThread) block() else dispatch_async(dispatch_get_main_queue()) { block() }
     }
 }
 
